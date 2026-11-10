@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Guitar</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { margin: 0; background: #1b1410; color: #eee; font-family: system-ui, sans-serif; text-align: center; }
+  h1 { margin: 16px 0 4px; font-weight: 500; }
+  p { margin: 4px; color: #bba; font-size: 14px; }
+  #board { position: relative; margin: 20px auto; width: 940px; height: 260px; background: #5a3a22;
+           border: 6px solid #2a1a0e; border-radius: 6px; user-select: none; touch-action: none; }
+  .fret { position: absolute; top: 0; bottom: 0; width: 3px; background: #c9c9c9; }
+  .nut { position: absolute; top: 0; bottom: 0; left: 70px; width: 8px; background: #eee; }
+  .dot { position: absolute; width: 16px; height: 16px; border-radius: 50%; background: #e8dcc0; opacity: .6; top: 122px; }
+  .string { position: absolute; left: 0; right: 0; cursor: pointer; }
+  .string i { position: absolute; left: 0; right: 0; top: 50%; background: linear-gradient(#ddd, #888); }
+  .string.on i { background: #ffd54a; box-shadow: 0 0 8px #ffd54a; }
+  .string b { position: absolute; left: 22px; top: 50%; transform: translateY(-50%); font-size: 14px; color: #fff; pointer-events: none; }
+  .cell { position: absolute; top: 0; height: 100%; }
+  .cell:hover { background: rgba(255,255,255,.12); }
+  .cell.lit { background: rgba(255,213,74,.7); box-shadow: inset 0 0 10px #ffd54a; }
+  .cell.held { background: rgba(255,213,74,.35); }
+  #chords button, #ctl button { margin: 3px; padding: 8px 14px; border: 0; border-radius: 6px; background: #3a2a1c; color: #eee; cursor: pointer; font-size: 15px; }
+  #chords button:hover, #ctl button:hover { background: #5a4028; }
+  #note { height: 24px; color: #ffd54a; font-size: 18px; }
+  .cell span { position: absolute; left: 4px; top: 3px; font-size: 10px; color: rgba(255,255,255,.6); pointer-events: none; }
+  #sargam button { margin: 3px; padding: 12px 16px; border: 0; border-radius: 6px; background: #7a3b1d; color: #fff; cursor: pointer; font-size: 17px; min-width: 56px; }
+  #sargam button:hover, #sargam button.on { background: #d9822b; }
+  #sargam button small { display: block; font-size: 10px; opacity: .7; }
+  select { padding: 6px; border-radius: 6px; background: #3a2a1c; color: #eee; border: 0; font-size: 15px; }
+</style>
+</head>
+<body>
+<h1>🎸 Guitar</h1>
+<p><a href="learn/index.html" style="color:#ffd54a">📘 New to guitar? Take the beginner lessons</a></p>
+<p>Click/drag across strings to strum or pick. Click a fret cell to hold a note. Keys: <b>1–6</b> pluck strings, <b>Space</b> strum, <b>Q W E R T</b> = chords.</p>
+<div id="note"></div>
+<div id="board"></div>
+<div><label>Sa (key): <select id="sa"></select></label></div>
+<div id="sargam"></div>
+<p>Sargam keys: <b>A S D F G H J K</b> = Sa Re Ga Ma Pa Dha Ni Sa'</p>
+<div id="chords"></div>
+<div id="ctl">
+  <button id="strumDown">Strum ↓</button>
+  <button id="strumUp">Strum ↑</button>
+  <button id="clear">Release frets</button>
+</div>
+<script>
+const ac = new (window.AudioContext || window.webkitAudioContext)();
+const OPEN = [64, 59, 55, 50, 45, 40];           // high e → low E (MIDI)
+const NAMES = ['e', 'B', 'G', 'D', 'A', 'E'];
+const NOTE = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const FRETS = 12, NUT_X = 78, FRET_W = 72, STR_H = 260 / 6;
+const frets = [0,0,0,0,0,0];                     // currently held fret per string
+const CHORDS = {                                 // low E → high e fret, -1 = muted
+  Em: [0,2,2,0,0,0], Am: [-1,0,2,2,1,0], C: [-1,3,2,0,1,0], G: [3,2,0,0,0,3],
+  D: [-1,-1,0,2,3,2], E: [0,2,2,1,0,0], A: [-1,0,2,2,2,0], Dm: [-1,-1,0,2,3,1]
+};
+const CHORD_KEYS = { q:'Em', w:'Am', e:'C', r:'G', t:'D' };
+
+const board = document.getElementById('board');
+const strEls = [], cellEls = [];
+const nut = Object.assign(document.createElement('div'), { className: 'nut' });
+board.appendChild(nut);
+for (let f = 1; f <= FRETS; f++) {
+  const d = document.createElement('div');
+  d.className = 'fret'; d.style.left = NUT_X + f * FRET_W + 'px';
+  board.appendChild(d);
+}
+[3,5,7,9].forEach(f => {
+  const d = document.createElement('div'); d.className = 'dot';
+  d.style.left = NUT_X + (f - .5) * FRET_W - 8 + 'px'; board.appendChild(d);
+});
+for (let s = 0; s < 6; s++) {
+  cellEls[s] = [];
+  for (let f = 1; f <= FRETS; f++) {
+    const c = document.createElement('div');
+    c.className = 'cell';
+    c.style.left = NUT_X + (f - 1) * FRET_W + 'px'; c.style.width = FRET_W + 'px';
+    c.style.top = s * STR_H + 'px'; c.style.height = STR_H + 'px';
+    c.onmousedown = e => { e.stopPropagation(); toggleFret(s, f); pluck(s); };
+    c.innerHTML = '<span></span>';
+    board.appendChild(c); cellEls[s][f] = c;
+  }
+  const el = document.createElement('div');
+  el.className = 'string'; el.style.top = s * STR_H + 'px'; el.style.height = STR_H + 'px';
+  el.innerHTML = `<i style="height:${1 + s * .5}px"></i><b>${NAMES[s]}</b>`;
+  el.style.pointerEvents = 'none';
+  board.appendChild(el); strEls[s] = el;
+}
+
+function toggleFret(s, f) { frets[s] = frets[s] === f ? 0 : f; refresh(); }
+function refresh() {
+  cellEls.forEach((row, s) => row.forEach((c, f) => c.classList.toggle('held', frets[s] === f)));
+}
+
+// ---- Sargam ----
+const SARGAM = ['Sa','re','Re','ga','Ga','Ma',"Ma'",'Pa','dha','Dha','ni','Ni'];
+let saPc = 0;                                     // pitch class of Sa (0 = C)
+const sargamOf = m => SARGAM[(((m - saPc) % 12) + 12) % 12];
+const saSel = document.getElementById('sa');
+NOTE.forEach((n, i) => saSel.add(new Option(n, i)));
+saSel.onchange = () => { saPc = +saSel.value; labelFrets(); };
+function labelFrets() {
+  cellEls.forEach((row, s) => row.forEach((c, f) => c.firstChild.textContent = sargamOf(OPEN[s] + f)));
+  strEls.forEach((el, s) => el.querySelector('b').textContent = NAMES[s] + ' · ' + sargamOf(OPEN[s]));
+}
+const sargamDiv = document.getElementById('sargam');
+const sargamBtns = SARGAM.map((n, i) => {
+  const b = document.createElement('button');
+  b.innerHTML = n + '<small>' + (i + 1) + '</small>'; b.querySelector('small').textContent = '';
+  b.onmousedown = () => playMidi(60 + saPc + i, 0, true);
+  sargamDiv.appendChild(b); return b;
+});
+{
+  const b = document.createElement('button');
+  b.textContent = "Sa'"; b.onmousedown = () => playMidi(72 + saPc, 0, true);
+  sargamDiv.appendChild(b);
+}
+const SARGAM_KEYS ={ a: 0, s: 2, d: 4, f: 5, g: 7, h: 9, j: 11, k: 12 };
+
+// ---- Audio chain: body resonances -> compressor -> out, plus light room reverb ----
+const input = ac.createGain();
+let tail = input;
+[[100, 5, 1.2], [230, 4, 1.5], [1100, -2, 1], [2800, 3, 1]].forEach(([f, gain, q]) => {
+  const biq = ac.createBiquadFilter(); biq.type = 'peaking'; biq.frequency.value = f; biq.gain.value = gain; biq.Q.value = q;
+  tail.connect(biq); tail = biq;
+});
+const comp = ac.createDynamicsCompressor(); comp.threshold.value = -18; comp.ratio.value = 3;
+tail.connect(comp); comp.connect(ac.destination);
+const verb = ac.createConvolver();
+{
+  const len = ac.sampleRate * 1.8, ir = ac.createBuffer(2, len, ac.sampleRate);
+  for (let c = 0; c < 2; c++) {
+    const d = ir.getChannelData(c);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
+  }
+  verb.buffer = ir;
+}
+const wet = ac.createGain(); wet.gain.value = .22;
+tail.connect(verb); verb.connect(wet); wet.connect(ac.destination);
+
+// Karplus-Strong with fractional-delay tuning, pick-position comb and per-pitch decay
+function synth(freq, vel = 1) {
+  const sr = ac.sampleRate, dur = 4;
+  const D = sr / freq - 0.5, N = Math.floor(D), fr = D - N, a = (1 - fr) / (1 + fr);
+  const ring = new Float32Array(N);
+  const noise = new Float32Array(N);
+  let sm = 0;
+  for (let i = 0; i < N; i++) { sm += 0.55 * ((Math.random() * 2 - 1) - sm); noise[i] = sm; }   // softened pick noise
+  const off = Math.max(1, Math.round(N * 0.17));
+  for (let i = 0; i < N; i++) ring[i] = (noise[i] - noise[(i + off) % N]) * vel;               // pick position
+  const g = Math.pow(0.001, 1 / (freq * 3.2));
+  const buf = ac.createBuffer(1, sr * dur, sr), out = buf.getChannelData(0);
+  let p = 0, prev = 0, ax = 0, ay = 0;
+  for (let i = 0; i < out.length; i++) {
+    const s = ring[p];
+    const lp = 0.5 * (s + prev); prev = s;
+    const y = a * lp + ax - a * ay; ax = lp; ay = y;
+    ring[p] = y * g;
+    p = (p + 1) % N;
+    out[i] = y;
+  }
+  let peak = 0; for (let i = 0; i < 20000; i++) peak = Math.max(peak, Math.abs(out[i]));
+  const k = 0.7 / (peak || 1);
+  for (let i = 0; i < out.length; i++) out[i] *= k;
+  return buf;
+}
+const cache = new Map();
+function lightNote(midi) {
+  OPEN.forEach((open, s) => {
+    const f = midi - open;
+    if (f < 0 || f > FRETS) return;
+    if (f === 0) { flash(s, 0); return; }
+    const c = cellEls[s][f];
+    c.classList.add('lit');
+    setTimeout(() => c.classList.remove('lit'), 600);
+  });
+}
+function playMidi(midi, when = 0, light = false) {
+  if (light) lightNote(midi);
+  if (ac.state === 'suspended') ac.resume();
+  const freq = 440 * Math.pow(2, (midi - 69) / 12);
+  const vel = 0.85 + Math.random() * 0.15;
+  const src = ac.createBufferSource(); src.buffer = synth(freq, vel);
+  const env = ac.createGain(), t = ac.currentTime + when;
+  env.gain.setValueAtTime(1, t); env.gain.setTargetAtTime(0.0001, t + 3, 0.4);
+  src.connect(env).connect(input); src.start(t);
+  const label = NOTE[midi % 12] + (Math.floor(midi / 12) - 1) + ' — ' + sargamOf(midi);
+  setTimeout(() => document.getElementById('note').textContent = label, when * 1000);
+}
+function pluck(s, when = 0) {
+  playMidi(OPEN[s] + frets[s], when);
+  flash(s, when);
+}
+function flash(s, when) {
+  setTimeout(() => { strEls[s].classList.add('on'); setTimeout(() => strEls[s].classList.remove('on'), 150); }, when * 1000);
+}
+
+function strum(down = true, gap = .04) {
+  const order = [5,4,3,2,1,0]; if (!down) order.reverse();
+  let t = 0;
+  order.forEach(s => { if (frets[s] >= 0) { pluck(s, t); t += gap; } });
+}
+
+function setChord(name) {
+  const c = CHORDS[name];                         // low E → high e
+  for (let i = 0; i < 6; i++) frets[5 - i] = c[i];
+  refresh(); strum(true);
+}
+
+// Drag across strings to pick them
+let dragging = false, lastS = -1;
+function stringAt(e) {
+  const r = board.getBoundingClientRect();
+  return Math.min(5, Math.max(0, Math.floor((e.clientY - r.top - 6) / STR_H)));
+}
+board.addEventListener('mousedown', e => { dragging = true; lastS = stringAt(e); pluck(lastS); });
+window.addEventListener('mouseup', () => dragging = false);
+board.addEventListener('mousemove', e => {
+  if (!dragging) return;
+  const s = stringAt(e); if (s !== lastS) { lastS = s; pluck(s); }
+});
+
+// Buttons
+const chordsDiv = document.getElementById('chords');
+Object.keys(CHORDS).forEach(n => {
+  const b = document.createElement('button'); b.textContent = n; b.onclick = () => setChord(n); chordsDiv.appendChild(b);
+});
+document.getElementById('strumDown').onclick = () => strum(true);
+document.getElementById('strumUp').onclick = () => strum(false);
+document.getElementById('clear').onclick = () => { frets.fill(0); refresh(); };
+
+labelFrets();
+
+// Keyboard
+addEventListener('keydown', e => {
+  if (e.repeat) return;
+  const k = e.key.toLowerCase();
+  if (k in SARGAM_KEYS) { playMidi(60 + saPc + SARGAM_KEYS[k] + (e.shiftKey ? -1 : 0), 0, true); return; }
+  if (e.key >= '1' && e.key <= '6') pluck(+e.key - 1);
+  else if (e.code === 'Space') { e.preventDefault(); strum(!e.shiftKey); }
+  else if (CHORD_KEYS[e.key.toLowerCase()]) setChord(CHORD_KEYS[e.key.toLowerCase()]);
+});
+</script>
+</body>
+</html>
